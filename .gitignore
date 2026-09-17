@@ -1,0 +1,14 @@
+# build artifacts
+bin/
+dist/
+
+# Go testing
+coverage.out
+coverage.html
+
+# editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
