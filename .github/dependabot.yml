@@ -1,8 +1,29 @@
+# This repository is generated from an upstream source; dependency bumps are applied
+# upstream and arrive via sync. Grouped monthly PRs here are signals, not merge targets.
 version: 2
 updates:
   - package-ecosystem: gomod
     directory: /
-    schedule: { interval: weekly }
+    schedule:
+      interval: monthly
+    groups:
+      all:
+        applies-to: version-updates
+        patterns: ["*"]
+      all-security:
+        applies-to: security-updates
+        patterns: ["*"]
+    open-pull-requests-limit: 2
+
   - package-ecosystem: github-actions
     directory: /
-    schedule: { interval: weekly }
+    schedule:
+      interval: monthly
+    groups:
+      all:
+        applies-to: version-updates
+        patterns: ["*"]
+      all-security:
+        applies-to: security-updates
+        patterns: ["*"]
+    open-pull-requests-limit: 2
