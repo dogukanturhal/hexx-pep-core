@@ -13,3 +13,5 @@
 - [ ] No new dependency (this module uses the standard library only), or the reason is given above
 - [ ] Public API changes are called out above
 - [ ] `CHANGELOG.md` updated under `[Unreleased]` for user-visible changes
+- [ ] This PR does one thing and is under 400 changed lines
+- [ ] AI assistance (if any) is described above
