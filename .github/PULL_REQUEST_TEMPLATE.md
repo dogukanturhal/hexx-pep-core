@@ -1,0 +1,15 @@
+## What and why
+
+<!-- What does this change, and why? Link the issue if there is one. -->
+
+## How it was tested
+
+<!-- Commands you ran, for example `go vet ./...` and `go test -race ./...`. -->
+
+## Checklist
+
+- [ ] Commits are signed off (`git commit -s`)
+- [ ] Tests added or updated
+- [ ] No new dependency (this module uses the standard library only), or the reason is given above
+- [ ] Public API changes are called out above
+- [ ] `CHANGELOG.md` updated under `[Unreleased]` for user-visible changes
