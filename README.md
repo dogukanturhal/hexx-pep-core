@@ -1,115 +1,199 @@
 # hexx-pep-core
 
-Shared primitives used by every HexxLock Policy Enforcement Point.
+[![CI](https://github.com/dogukanturhal/hexx-pep-core/actions/workflows/ci.yml/badge.svg)](https://github.com/dogukanturhal/hexx-pep-core/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/dogukanturhal/hexx-pep-core.svg)](https://pkg.go.dev/github.com/dogukanturhal/hexx-pep-core)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![OpenSSF Scorecard](https://api.securityscorecard.dev/projects/github.com/dogukanturhal/hexx-pep-core/badge)](https://securityscorecard.dev/viewer/?uri=github.com/dogukanturhal/hexx-pep-core)
 
-The two PEPs in production today —
-[**Talon**](https://github.com/dogukanturhal/talon) (HTTP IAP for internal admin services) and
-[**Jess**](https://github.com/dogukanturhal/jess) (L4 broker for SSH /
-Postgres / RDP) — both derive their operator identity from the same
-Falcon-ID OIDC tokens and both emit audit events to the same shipper.
-They do NOT share their event shapes (HTTP-rich vs. broker-shaped) or
-their policy layers (Rego + SpiceDB vs. role-intersection). Forcing one
-struct would be Procrustean.
+Small Go building blocks for policy enforcement points: an audit hash chain, a
+verified-identity type, signed offline authorization decisions, a durable
+store-and-forward spool, a resilience kit and a crypto-profile switch.
 
-What they DO share — and what this module provides — is the integrity
-primitive under both audit funnels and the shape of the verified identity:
+## Who it's for
 
-| Package | Purpose |
+People writing a proxy or broker that sits in front of something sensitive and
+has to decide, log and keep working when its control plane is unreachable. The
+code was written for two such programs,
+[Talon](https://github.com/dogukanturhal/talon) (an HTTP identity-aware proxy)
+and [Jess](https://github.com/dogukanturhal/jess) (an L4 broker for SSH,
+PostgreSQL and RDP), which share an identity provider
+([falcon-id](https://github.com/dogukanturhal/falcon-id)) and an audit shipper
+but not their event shapes or policy engines. This module is what they have in
+common and nothing more. Go 1.26 or newer.
+
+## Features
+
+Everything below exists in `pkg/` and has tests. The standard library is the only
+dependency.
+
+| Package | What it does |
 |---|---|
-| `pkg/chain` | Tamper-evident SHA-256 hash chain over newline-delimited JSON events. NIST SP 800-53 AU-9/AU-10 / SOC 2 CC7.2 evidence. Bit-for-bit identical to the original Jess implementation so traces remain replayable. |
-| `pkg/identity` | The verified operator (`Subject`, `Email`, `Roles`, `Groups`, `Region`, `AMR`) + the `Verifier` interface. |
-| `pkg/govdecision` | DDIL Phase-3: governed staleness-budget decisions. Signed, time-boxed, revocation-epoch-aware authorization results a PEP can honour **offline** within budget, then fail closed. Pluggable `Signer`/`Verifier` (Ed25519 now, ML-DSA later) — the `SECURITY_PROFILE` crypto-agility seam. |
-| `pkg/spool` | DDIL Phase-3: durable, crash-safe store-and-forward. Append-only, fsync + atomic write-then-rename; ordered, idempotent `Reconcile` into a WORM sink; bounded retention (default 30 days) with backpressure or logged oldest-first drop — never silent truncation. |
-| `pkg/resilient` | DDIL Phase-3: uniform resilience kit — per-attempt timeout + three-state circuit breaker + exponential backoff with full jitter, plus a `Clock` seam with skew-leeway helpers. Stdlib-only. |
-| `pkg/cryptoprofile` | Crypto-agility seam (P2.6): resolves `SECURITY_PROFILE ∈ {enterprise, cnsa2}` into a concrete signature scheme + TLS key-exchange groups, so FIPS 140-3 / post-quantum / CNSA 2.0 posture is **config, not a code fork**. `Signer`/`Verifier` return `govdecision`-compatible implementations — enterprise = **Ed25519** (fully implemented); cnsa2 = **ML-DSA-87**, a documented fail-closed seam (`ErrProfileUnavailable`) until Go 1.27's `crypto/mldsa` lands. `TLSConfig`/`KEMGroups` set a hybrid PQC group with a classical group alongside (never PQC-only): enterprise **X25519MLKEM768**, cnsa2 **SecP384r1MLKEM1024** (ML-KEM-1024). FIPS 140-3 mode is a build/run flag (`GOFIPS140=v1.0.0`, CMVP #5247), not code. |
+| `pkg/chain` | `JSONLChain` writes newline-delimited JSON events. Each event carries `seq` and `prev_hash`, where `prev_hash` is the SHA-256 of the exact previous line including its newline. Safe for concurrent use. |
+| `pkg/identity` | The `Identity` struct (`Subject`, `Email`, `Roles`, `Groups`, `Region`, `AMR`) with role, group and auth-method helpers, and a `Verifier` interface. |
+| `pkg/govdecision` | Signed, time-boxed authorization decisions per tier, with a revocation epoch per subject. `CachedEvaluator` serves a cached decision offline until its budget runs out, then denies. Pluggable `Signer`/`Verifier`; Ed25519 is implemented. |
+| `pkg/spool` | `FileSpool`: one fsynced, atomically renamed file per record, hash-chained, with ordered and retryable `Reconcile` into a sink. Retention is bounded by age, bytes or count; on overflow it either returns `ErrSpoolFull` or drops the oldest record and reports every drop to a `DropLogger`. |
+| `pkg/resilient` | `Do` with per-attempt timeout, backoff with jitter and a retryable-error predicate; a three-state `Breaker`; a `Clock` interface with a fake for tests and skew-leeway helpers. |
+| `pkg/cryptoprofile` | Resolves `SECURITY_PROFILE` (`enterprise`, `cnsa2`) to a signature scheme and TLS key-exchange groups. See the limitations: the `cnsa2` signature half is not working yet. |
 
-The rationale is recorded in an architecture decision record kept with the
-platform's infrastructure repository.
+## Quickstart
 
-## Adoption pattern (chain)
+```sh
+go get github.com/dogukanturhal/hexx-pep-core@main
+```
 
-Each PEP keeps its own product-shape event struct and embeds `chain.Stamp`:
+No version is tagged yet, so `@main` is what works today. A hash-chained audit
+log in a dozen lines:
 
 ```go
-import "github.com/dogukanturhal/hexx-pep-core/pkg/chain"
+package main
+
+import (
+	"context"
+	"os"
+	"time"
+
+	"github.com/dogukanturhal/hexx-pep-core/pkg/chain"
+)
 
 type Event struct {
-    chain.Stamp
-    Time     time.Time `json:"time"`
-    Subject  string    `json:"subject,omitempty"`
-    Action   string    `json:"action"`
-    // ...product-specific fields...
+	chain.Stamp                    // seq + prev_hash, filled in by the sink
+	Time        time.Time `json:"time"`
+	Subject     string    `json:"subject,omitempty"`
+	Action      string    `json:"action"`
 }
 
-// Optional: implement chain.TimeStamper if you want auto-stamped Time.
-func (e *Event) StampTime(t time.Time) { if e.Time.IsZero() { e.Time = t } }
+// Optional: lets the sink fill Time for you.
+func (e *Event) StampTime(t time.Time) {
+	if e.Time.IsZero() {
+		e.Time = t
+	}
+}
 
 func main() {
-    sink := chain.NewJSONLChain(os.Stdout)
-    _ = sink.Emit(ctx, &Event{Action: "open", Subject: "..."})
-    // Sink fills Stamp.Seq + Stamp.PrevHash before marshaling.
+	sink := chain.NewJSONLChain(os.Stdout)
+	_ = sink.Emit(context.Background(), &Event{Action: "open", Subject: "alice"})
+	_ = sink.Emit(context.Background(), &Event{Action: "close", Subject: "alice"})
 }
 ```
 
-## Adoption pattern (identity)
+Each product keeps its own event struct and embeds `chain.Stamp`. `seq` and
+`prev_hash` appear at the start of each line.
 
-```go
-import "github.com/dogukanturhal/hexx-pep-core/pkg/identity"
-
-func authorize(ctx context.Context, id identity.Identity, target Target) bool {
-    return id.HasAnyRole(target.RequiredRoles...)
-}
-```
-
-## Why a dedicated module
-
-Considered and rejected:
-- **`pkg/` subdir inside Talon or Jess** — distorts product ownership; creates a
-  one-way dependency between the two PEPs.
-- **Single `hexx-shared` mono-module** — grab-bag entropy; opposite of focused.
-
-A third PEP (hypothetical `hexx-sftp-broker`, `hexx-mqtt-broker`) inherits both
-primitives free.
-
-## Adoption pattern (cryptoprofile)
-
-Resolve the profile once at boot and hand the selected signer to `govdecision` —
-flipping `SECURITY_PROFILE` changes the crypto with no other code change:
+Choosing a signing scheme and a TLS posture from one environment variable:
 
 ```go
 import (
-    "github.com/dogukanturhal/hexx-pep-core/pkg/cryptoprofile"
-    "github.com/dogukanturhal/hexx-pep-core/pkg/govdecision"
+	"net/http"
+	"os"
+
+	"github.com/dogukanturhal/hexx-pep-core/pkg/cryptoprofile"
+	"github.com/dogukanturhal/hexx-pep-core/pkg/govdecision"
 )
 
-prof, err := cryptoprofile.Resolve(os.Getenv("SECURITY_PROFILE")) // "" => enterprise
-signer, err := cryptoprofile.Signer(prof, vaultIssuerPrivateKey)  // govdecision.Signer
+prof, err := cryptoprofile.Resolve(os.Getenv("SECURITY_PROFILE")) // "" means enterprise
+signer, err := cryptoprofile.Signer(prof, issuerPrivateKey)       // govdecision.Signer
 signed, err := govdecision.Sign(signer, decision)
 
-// TLS side: hybrid post-quantum KEX with a classical group alongside.
-srv := &http.Server{TLSConfig: cryptoprofile.TLSConfig(prof)} // + Certificates
+// Hybrid post-quantum key exchange with a classical group alongside.
+srv := &http.Server{TLSConfig: cryptoprofile.TLSConfig(prof)} // plus Certificates
 ```
 
-FIPS 140-3 mode is not selected here — it is a build/run flag:
-`GOFIPS140=v1.0.0 go build ./...` plus `GODEBUG=fips140=on`. The seam only picks
-FIPS-approved algorithms per profile (`cryptoprofile.FIPSApproved`), and
-`cryptoprofile.FIPSMode` reports the runtime state without being able to change it.
+With the default `enterprise` profile this signs with Ed25519 and offers
+X25519MLKEM768. With `cnsa2`, `cryptoprofile.Signer` returns an error (see
+below), while `TLSConfig` offers SecP384r1MLKEM1024.
 
-## Compatibility
+FIPS 140-3 mode is not selected by this package. It is a build and run setting
+(`GOFIPS140=v1.0.0 go build ./...` and `GODEBUG=fips140=on`).
+`cryptoprofile.FIPSMode` only reports whether it is on.
 
-- Go 1.26+. (`pkg/cryptoprofile` uses the Go 1.24 `tls.X25519MLKEM768` and Go 1.26
-  `tls.SecP384r1MLKEM1024` hybrid KEX constants and `crypto/fips140`; the module's
-  `go` directive is `go 1.26`, matching the design's Go 1.26 cryptographic-module
-  baseline. The other packages remain Go 1.23-compatible in isolation.)
-- Hash-chain **algorithm** is bit-for-bit identical to the original Jess
-  `internal/audit/JSONSink` (SHA-256 over the exact emitted line bytes
-  including the trailing `\n`). A SOC analyst with the old verifier code can
-  parse new traces; a new verifier can parse old traces.
-- **Field order** in the JSON output differs from pre-migration Jess by one
-  hop: `chain.Stamp` is embedded at the top of the product event struct, so
-  `"seq"` and `"prev_hash"` appear at the START of each line instead of the
-  end. Consumers that parse JSON (Wazuh, Loki LogQL, replay scripts) are
-  unaffected. The hash-chain itself is internally consistent within each
-  chain run; the natural boundary is pod restart on rollout (in-memory chain
-  state starts fresh anyway), so no chain ever spans the migration in
-  flight.
+Run the tests:
+
+```sh
+go vet ./...
+go test -race ./...
+```
+
+## How it compares
+
+- **Using the standard library directly.** Most of this is thin. The reason to
+  use it is that two programs already agree on the chain format, the decision
+  wire format and the spool record format; if you only need one of those, copying
+  the file is reasonable.
+- **Transparency logs and ledgers** (Trillian, Sigstore Rekor) give you
+  third-party verifiable, append-only storage with inclusion proofs. `chain` is
+  one process hashing its own output: it makes tampering with a log file
+  detectable by someone who holds the log and trusts the first line, nothing
+  more.
+- **Retry and breaker libraries** (`cenkalti/backoff`, `sony/gobreaker`,
+  `avast/retry-go`) are more widely used than `resilient`. Use them if you do not
+  need the injectable clock or the skew helpers that `govdecision` shares.
+- **OPA and Cedar** decide policy. `govdecision` does not: it carries and caches
+  signed results of a decision made elsewhere, so a proxy can keep honouring them
+  while disconnected.
+
+## Architecture
+
+```
+  token --> identity.Verifier --> identity.Identity
+                                        |
+                                        v
+  PDP (Rego, SpiceDB, ...) --> govdecision.Evaluator --signed Decision--> cached,
+                                        |                  honoured offline until
+                                        v                  the tier budget expires
+                               enforce + audit event
+                                        |
+                       chain.JSONLChain (seq, prev_hash)
+                                        |
+                       stdout / shipper    or    spool.FileSpool --Reconcile--> sink
+
+  cryptoprofile: picks the Signer/Verifier given to govdecision and the TLS groups
+  resilient:     wraps calls to the PDP, shipper and sink (timeout, backoff, breaker)
+```
+
+## Status and limitations
+
+This is early code. Read this before depending on it.
+
+- **Post-quantum signing is a seam, not a feature.** In the `cnsa2` profile,
+  `cryptoprofile.Signer`, `Verifier` and `Generate` return an error wrapping
+  `ErrProfileUnavailable`. ML-DSA-87 needs a validated implementation, and the Go
+  standard library does not export one yet (the public `crypto/mldsa` API is
+  proposed for Go 1.27). It fails closed: it never produces a fake signature. The
+  post-quantum part that does work is the hybrid TLS key exchange.
+- **`chain` has no verifier.** The package writes the chain; it does not read one
+  back. Checking a log means re-hashing the lines yourself, as the test
+  `TestHashChainAdvancesAndTamperBreaks` does. There is no checkpointing, signing
+  of the head, or external anchoring, so someone who can rewrite the whole file
+  can rebuild a consistent chain.
+- **Chain state is in memory.** `JSONLChain` starts at `seq` 0 with an empty
+  `prev_hash` every time the process starts. A restart begins a new chain; nothing
+  links it to the previous one.
+- **There is no trusted time source.** The `resilient.Clock` interface and the
+  skew-leeway helpers are the place an RFC 3161 time-stamp client could be
+  plugged in, but no such client is included or wired. Time in `govdecision` and
+  `chain` comes from the local clock.
+- **`identity` defines an interface only.** There is no OIDC or JWT verifier in
+  this module; each program supplies its own `Verifier`.
+- **`govdecision` ships Ed25519 only**, and the in-memory cache and epoch store
+  do not survive a restart.
+- **`spool` is file-based only.** A database-backed spool is mentioned in the
+  package comments but not implemented here.
+- Version 0.x: the API can change in any release.
+- The module requires Go 1.26 because `cryptoprofile` uses
+  `tls.SecP384r1MLKEM1024`.
+- No independent security review has been done. Do not read the references to
+  NIST controls or FIPS in the code comments as a compliance claim.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Commits need a DCO sign-off. Everyone
+taking part is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Security
+
+Please report vulnerabilities privately, as described in
+[SECURITY.md](SECURITY.md). Do not open public issues for them.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
