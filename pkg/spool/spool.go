@@ -4,7 +4,7 @@
 // buffers audit/telemetry/command records locally when the sink (WORM log
 // bucket, control plane, NATS) is unreachable and reconciles them in order on
 // reconnect. It generalises falcon-id's internal/worker/outbox_processor.go so
-// eyrie, jess, and the endpoint agent stop losing data across a partition.
+// the control plane, jess, and the endpoint agent stop losing data across a partition.
 //
 // Guarantees:
 //
@@ -24,7 +24,7 @@
 //
 // The file-backed implementation (FileSpool) targets the endpoint and mirrors
 // the atomic-rename pattern already used by the agent's spool.rs. A
-// Postgres-backed implementation for eyrie satisfies the same Sink/Record
+// Postgres-backed implementation for the control plane satisfies the same Sink/Record
 // contract.
 //
 // Compliance: durable, ordered, gap-detecting local buffering of audit records

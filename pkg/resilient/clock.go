@@ -9,7 +9,7 @@ import (
 
 // Clock abstracts wall-clock time so resilience logic (breaker cool-downs,
 // backoff sleeps, decision-freshness checks) is deterministically testable and
-// so a defence-SKU trusted-time source (RFC-3161 TSA, P4.8) can slot in behind
+// so a trusted-time source (such as an RFC 3161 TSA) can slot in behind
 // the same seam without touching call sites. The zero cost of the seam is one
 // interface hop; the benefit is that no primitive in this module reads
 // time.Now() directly.

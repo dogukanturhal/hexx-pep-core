@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package cryptoprofile is the crypto-agility seam (P2.6): it resolves the
+// Package cryptoprofile is the crypto-agility seam: it resolves the
 // single boot-time selector SECURITY_PROFILE ∈ {enterprise, cnsa2} into the
 // concrete signature scheme and TLS key-exchange groups an application should
 // use, so FIPS 140-3 / post-quantum / CNSA 2.0 posture is CONFIGURATION, not a

@@ -14,7 +14,7 @@
 // It also provides a Clock seam with skew-leeway helpers (Within/Expired/
 // NotYetValid) for the time-window checks that degraded-mode decisions and
 // key-freshness windows depend on (P3.3), and behind which a defence-SKU
-// trusted-time source (RFC-3161 TSA, P4.8) can later slot without touching call
+// trusted-time source (such as an RFC 3161 TSA) can later slot without touching call
 // sites.
 //
 // The package is deliberately dependency-light: standard library only
